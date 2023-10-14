@@ -1,170 +1,92 @@
-from typing import Union
-from models import Sign, Form, Value
+"""
+Description of the file format here:
+http://oracc.museum.upenn.edu/ogsl/theogslfileformat/index.html
+"""
+import json
+from typing import List, Union
+from models import SignBlock, Sign, Form, Value
 
 
-def read_ogsl() -> [str]:
+def read_ogsl() -> List[str]:
   with open('ogsl.asl', 'r') as f:
     lines = f.readlines()
     lines = [l.replace('\n', '').replace('\t', ' ').strip() for l in lines]
     return lines
 
 
-def find_sign_blocks(lines):
-    inside_sign_block = False
-
-    sign_blocks = [] # list of (start, end)
-    sign_start_line = 0
+def get_blocks(filename) -> List[str]:
+    """
+    Find all blocks of text separated by a blank line.
+    Returns a list of blocks, where each block is a list of its lines.
+    """
+    with open(filename, 'r') as f:
+        lines = f.readlines()
     
-    for i, line in enumerate(lines):
-        token = line.split(' ', 1)[0]
-        
-        if token == '@sign' or token == "@sign-":
-            if inside_sign_block:
-                raise SyntaxError(f"Nested '@sign' detected. Starting at line {sign_start_line+1}, another '@sign' found at line {i+1}.")
-            inside_sign_block = True
-            sign_start_line = i
-        elif token == '@end':
-            data = line.split(' ', 1)[1] if ' ' in line else None
-            if data == 'sign':
-                if not inside_sign_block:
-                    raise SyntaxError(f"Orphan '@end sign' detected at line {i+1}.")
-                inside_sign_block = False
-                sign_blocks.append((sign_start_line, i))
+    groups = []
+    current_group = []
+    
+    for line in lines:
+        stripped_line = line.strip().replace('\t', ' ')
 
-    if inside_sign_block:
-        raise SyntaxError(f"Unclosed '@sign' block starting at line {sign_start_line+1}.")
+        if stripped_line:
+            current_group.append(stripped_line)
+        else:
+            if current_group:
+                groups.append(current_group)
+                current_group = []
+                
+    if current_group:
+        groups.append(current_group)
+        
+    return groups
+
+def limit_to_sign_blocks(blocks) -> List[SignBlock]:
+    """
+    Given a list of blocks, return a list of only those blocks that are sign blocks.
+    """
+    sign_blocks = []
+    other_block_types = set()
+    for block in blocks:
+        first_line_tokens = block[0].split(' ')
+        if first_line_tokens[0] == "@sign" or first_line_tokens[0] == "@sign-":
+            block = SignBlock(lines=block)
+            sign_blocks.append(block)
+        else:
+            other_block_types.add(first_line_tokens[0])
+    print(f"Detected {len(sign_blocks)} sign blocks out of {len(blocks)} total.")
+    print("Other block types: ", list(sorted(other_block_types)))
     return sign_blocks
 
 
-def parse_sign_block(lines: [str], block_start: int, block_end: int):
-  block_lines = lines[block_start:block_end]
+def parse_sign_blocks(blocks: List[SignBlock]) -> List[Sign]:
+  signs = [Sign.from_lines(block.lines) for block in blocks]
+  return [sign for sign in signs if sign is not None]
 
-  sign_name = block_lines[0].split(' ', 1)[1]
-  sign = Sign(name=sign_name)
-
-  value_scope: Union[Sign, Form] = sign
-  note_scope: Union[Sign, Form, Value] = sign
-
-  for i, line in enumerate(block_lines[1:]):
-      line_num = block_start + i + 2
-
-      token, data = line.split(' ', 1) if ' ' in line else (line, None)
-      
-      # Values can belong to either a sign or a form.
-      if token == '@v' or token == "@v-":
-        value = Value(value=data, deprecated=(token == "@v-"))
-        value_scope.values.append(value)
-        note_scope = value
-
-      # Form
-      elif token == '@form':
-        if isinstance(value_scope, Form):
-          sign.forms.append(value_scope)
-        form = Form(variant_code=data)
-        value_scope = form
-        note_scope = form
-
-      # ----------------------
-      # ------- NOTES --------
-      # ----------------------
-      elif token == '@note':
-        note_scope.notes.append(data)
-      elif token == "@inote":
-        note_scope.inotes.append(data)
-
-      # ----------------------
-      # ----- UNICODE --------
-      # ----------------------
-      # @uage = unicode age/version
-      elif token == "@uage":
-        if isinstance(value_scope, Sign) or isinstance(value_scope, Form):
-          if value_scope.unicode_version is not None:
-            raise ValueError(f"Duplicate '@uage' on line {line_num}.")
-          value_scope.unicode_version = data
-        else:
-          raise ValueError(f"Unexpected '@uage' on line {line_num}.")
-      # @ucun = unicode cuneiform
-      elif token == "@ucun":
-        if isinstance(value_scope, Sign) or isinstance(value_scope, Form):
-          if value_scope.unicode_cuneiform is not None:
-            raise ValueError(f"Duplicate '@ucun' on line {line_num}.")
-          value_scope.unicode_cuneiform = data
-        else:
-          raise ValueError(f"Unexpected '@ucun' on line {line_num}.")
-      # @umap = unicode map
-      elif token == '@umap':
-        if isinstance(value_scope, Sign) or isinstance(value_scope, Form):
-          if value_scope.unicode_map is not None:
-            raise ValueError(f"Duplicate '@umap' on line {line_num}.")
-          value_scope.unicode_map = data
-        else:
-          raise ValueError(f"Unexpected '@umap' on line {line_num}.")
-      # @uname = unicode name
-      elif token == "@uname":
-        if isinstance(value_scope, Sign) or isinstance(value_scope, Form):
-          if value_scope.unicode_name is not None:
-            raise ValueError(f"Duplicate '@uname' on line {line_num}.")
-          value_scope.unicode_name = data
-        else:
-          raise ValueError(f"Unexpected '@uname' on line {line_num}.")
-      # @unote = unicode note
-      elif token == '@unote':
-        if isinstance(value_scope, Sign) or isinstance(value_scope, Form):
-          if value_scope.unicode_notes is not None:
-            raise ValueError(f"Duplicate '@unote' on line {line_num}.")
-          value_scope.unicode_notes = data
-        else:
-          raise ValueError(f"Unexpected '@unote' on line {line_num}.")
-      # @useq = unicode sequence
-      elif token == "@useq":
-        if isinstance(value_scope, Sign) or isinstance(value_scope, Form):
-          if value_scope.unicode_sequence is not None:
-            raise ValueError(f"Duplicate '@useq' on line {line_num}.")
-          value_scope.unicode_sequence = data
-        else:
-          raise ValueError(f"Unexpected '@useq' on line {line_num}.")
-
-      # ----------------------
-      # ------- OTHER --------
-      # ----------------------
-      elif token == "@list":
-        if isinstance(value_scope, Sign) or isinstance(value_scope, Form):
-          value_scope.signlists.append(data)
-        else:
-          raise ValueError(f"Unexpected '@list' on line {line_num}.")
-      elif token == "@aka":
-        continue
-      elif token == "@@":
-        continue
-      elif token == "@lit":
-        continue
-      elif token == '@sys':
-        continue
-      elif token == '@ref':
-        continue
-      elif token == '@pname':
-        continue
-      elif token == '@fake':
-        continue
-      elif token in ['ideally', 'now', 'or']:
-        continue
-      else:
-        raise ValueError(f"Unrecognized token '{token}' on line {line}.")
-
-  if isinstance(value_scope, Form):
-    sign.forms.append(value_scope)
-  return sign
-
+  
 def main():
-  lines = read_ogsl()
-  sign_blocks = find_sign_blocks(lines)
-  signs = []
-  for block_start, block_end in sign_blocks:
-    sign = parse_sign_block(lines, block_start, block_end)
-    signs.append(sign)
+  blocks = get_blocks('ogsl.asl')
+  sign_blocks = limit_to_sign_blocks(blocks)
+  # Other block types: ['@compoundonly', '@inote', '@listdef', '@lref', '@signlist', '@sysdef']
+  parsed = parse_sign_blocks(sign_blocks)
 
+  # Validate: are names unique
+  # validate: are signs unique?
+  no_cune = 0
+  cune = 0
+  for sign in parsed:
+    if sign.unicode_cuneiform:
+      cune += 1
+    else:
+      no_cune += 1
+  print(no_cune)
+  print(cune)
+
+
+if __name__ == "__main__":
+  main2()
+
+def dump_to_json(signs):
   out = {}
-  import json
   for sign in signs:
     for value in sign.values:
       val = value.value
@@ -179,5 +101,3 @@ def main():
         out[val] = form.unicode_cuneiform if form.unicode_cuneiform is not None else form.variant_code
   with open("signs-2.json", "w") as f:
     json.dump(out, f, ensure_ascii=False)
-if __name__ == "__main__":
-  main()
