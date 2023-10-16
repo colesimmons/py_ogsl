@@ -13,7 +13,7 @@ class _LineType(Enum):
     InternalNote = "@inote"
     Lit = "@lit"
     Name = "@sign"
-    NameIsDeprecated = "@sign-"
+    NameDeprecated = "@sign-"
     Note = "@note"
     PName = "@pname"
     Ref = "@ref"
@@ -72,90 +72,48 @@ class Sign(BaseModel):
         return value
 
     @classmethod
-    def parse_line(cls, line: str) -> (_LineType, str):
-        try:
-          line_type_str, data = line.split(" ", 1)
-        except ValueError:
-          line_type_str, data = line, ""
-
-        try:
-            line_type = _LineType(line_type_str)
-        except ValueError:
-            raise ValueError(
-                f"Unrecognized line type '{line_type_str}' in block {line}."
-            )
-        return (line_type, data)
-
-
-    @classmethod
     def from_lines(
         cls, lines: List[str]
     ) -> Optional["Sign"]:
         if not lines:
             return None
 
-        # Parse first line to get name
+        # FIRST LINE
         first_line = lines[0]
-        line_type, first_line_val = cls.parse_line(first_line)
-        if line_type == _LineType.Name or line_type == _LineType.NameIsDeprecated:
-          sign = Sign(name=first_line_val, is_deprecated=line_type == _LineType.NameIsDeprecated)
-        else:
+        line_type, first_line_val = _parse_line(first_line)
+        if line_type not in [_LineType.Name, _LineType.NameDeprecated]:
           raise ValueError(f"Expected @sign or @sign- on line {first_line}.")
+        sign = Sign(name=first_line_val, is_deprecated=line_type == _LineType.NameDeprecated)
 
-        # Validate that final line is @end
+        # LAST LINE
         final_line = lines[-1]
         if final_line != "@end sign":
           raise ValueError(f"Expected @end on line {final_line}.")
 
-        # Parse remaining lines
-        form_blocks: List[List[str]] = []
-        cur_form_block: List[str] = []
-
-        value_blocks: List[List[str]] = []
-        cur_value_block: List[str] = []
-
-        for line in lines[1:-1]:
-            line_type, data = cls.parse_line(line)
-
-            # Once we start seeing form blocks,
-            # the lines no longer define properties of the sign.
-            if line_type == _LineType.Form:
-                if cur_form_block:
-                    form_blocks.append(cur_form_block)
-                cur_form_block = [line]
-                continue
-
-            if cur_form_block:
-                cur_form_block.append(line)
-                continue
-
-            # Same with values.
-            if line_type == _LineType.Value or line_type == _LineType.ValueDeprecated:
-                if cur_value_block:
-                    value_blocks.append(cur_value_block)
-                cur_value_block = [line]
-                continue
-
-            if cur_value_block:
-                cur_value_block.append(line)
-                continue
-
-            # Okay, now the lines are defining properties of the sign.
+        # Loop through remaining lines.
+        for i, line in enumerate(lines[1:-1]):
+            line_type, data = _parse_line(line)
             if line_type == _LineType.Fake:
                 return None
-            else:
-              sign.assign_val(line_type, data)
 
-        if cur_value_block:
-            value_blocks.append(cur_value_block)
-        if cur_form_block:
-            form_blocks.append(cur_form_block)
+            # Once we start seeing value or form blocks,
+            # all properties thereafter should be scoped to a form or a value.
+            # We'll handle them separately to avoid any leakage.
+            if line_type in [
+                _LineType.Form,
+                _LineType.Value,
+                _LineType.ValueDeprecated,
+            ]:
+              value_blocks, form_blocks = _separate_out_value_and_form_blocks(lines[i+1:-1])
+              sign.values = [Value.from_lines(block) for block in value_blocks]
+              sign.forms = [Form.from_lines(block) for block in form_blocks]
+              break
 
-        sign.forms = [Form.from_lines(lines) for lines in form_blocks]
-        sign.values = [Value.from_lines(lines) for lines in value_blocks]
+            sign._assign_property(line_type, data)
+
         return sign
 
-    def assign_val(self, line_type: _LineType, val: str):
+    def _assign_property(self, line_type: _LineType, val: str):
       if line_type == _LineType.Aka:
           self.aka = val
       elif line_type == _LineType.InternalNote:
@@ -186,4 +144,51 @@ class Sign(BaseModel):
           raise ValueError(
               f"Unrecognized line type '{line_type}' in block {lines}."
           )
+
+
+def _parse_line(line: str) -> (_LineType, str):
+    try:
+      line_type_str, data = line.split(" ", 1)
+    except ValueError:
+      line_type_str, data = line, ""
+
+    try:
+        line_type = _LineType(line_type_str)
+    except ValueError:
+        raise ValueError(
+            f"Unrecognized line type '{line_type_str}' in block {line}."
+        )
+    return (line_type, data)
+
+
+def _separate_out_value_and_form_blocks(lines: List[str]) -> (List[List[str]], List[List[str]]):
+  # First step is to split between all sign value-related lines and all form-related lines.
+  all_value_lines: List[str] = lines
+  all_form_lines: List[str] = []
+
+  for i, line in enumerate(lines):
+    line_type, _ = _parse_line(line)
+    if line_type == _LineType.Form:
+      all_value_lines = lines[:i]
+      all_form_lines = lines[i:]
+      break
   
+  # Next step is to split the value lines into blocks.
+  value_blocks: List[List[str]] = []
+  for line in all_value_lines:
+    line_type, _ = _parse_line(line)
+    if line_type in [_LineType.Value, _LineType.ValueDeprecated]:
+        value_blocks.append([line])
+    else:
+        value_blocks[-1].append(line)
+
+  # Now do the same for the form lines.
+  form_blocks: List[List[str]] = []
+  for line in all_form_lines:
+    line_type, _ = _parse_line(line)
+    if line_type == _LineType.Form:
+        form_blocks.append([line])
+    else:
+        form_blocks[-1].append(line)
+  
+  return (value_blocks, form_blocks)

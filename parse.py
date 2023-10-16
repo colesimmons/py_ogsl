@@ -74,6 +74,7 @@ def main():
   no_cune = 0
   cune = 0
   for sign in parsed:
+    #print(sign.name)
     if sign.unicode_cuneiform:
       cune += 1
     else:
@@ -83,7 +84,7 @@ def main():
 
 
 if __name__ == "__main__":
-  main2()
+  main()
 
 def dump_to_json(signs):
   out = {}
